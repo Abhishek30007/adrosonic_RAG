@@ -1,0 +1,95 @@
+# ==========================================
+# Python & Bytecode
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ==========================================
+# Virtual Environments
+# ==========================================
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ==========================================
+# Sensitive API Keys & Secrets
+# ==========================================
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+*.key
+*.pem
+
+# ==========================================
+# Vector Database & Local Storage
+# ==========================================
+qdrant_storage/
+*.lock
+local_storage/
+
+# ==========================================
+# Downloaded Datasets & Model Weights Caches
+# ==========================================
+.cache/
+huggingface/
+fastembed_cache/
+datasets_cache/
+*.onnx
+*.bin
+*.pt
+*.safetensors
+
+# ==========================================
+# Node.js / Load Testing Artifacts
+# ==========================================
+node_modules/
+package-lock.json
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ==========================================
+# IDEs, OS & Temporary Files
+# ==========================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+
+# ==========================================
+# Explicitly ALLOW Hackathon Evaluation Files
+# ==========================================
+!phase1_baseline_metrics.csv
+!phase2_metrics.csv
+!*.csv
+!*.md

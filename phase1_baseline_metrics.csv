@@ -1,0 +1,21 @@
+question,ground_truth,context_precision,context_recall,retrieval_latency_ms,num_contexts_retrieved
+what is the normal resting heart rate for adults,A normal resting heart rate for adults ranges from 60 to 100 beats per minute.,0.0,0.0,143.08,5
+what causes tides in the ocean,Ocean tides are caused primarily by the gravitational pull of the moon and the sun on Earth's oceans.,0.8,1.0,90.29,5
+how many chromosomes do humans have,Humans have 46 chromosomes in 23 pairs in almost every cell.,0.33,1.0,74.31,5
+what is photosynthesis,Photosynthesis is the process by which green plants and some organisms use sunlight to synthesize nutrients from carbon dioxide and water.,1.0,1.0,75.69,5
+what is the capital of australia,The capital city of Australia is Canberra.,0.0,0.0,64.9,5
+who invented the telephone,Alexander Graham Bell is widely credited with inventing the first practical telephone in 1876.,0.0,0.0,65.04,5
+what is the boiling point of water in fahrenheit,Water boils at 212 degrees Fahrenheit at standard atmospheric pressure.,1.0,1.0,117.21,5
+what is the speed of light in vacuum,"The speed of light in a vacuum is approximately 299,792 kilometers per second (about 186,282 miles per second).",0.4,1.0,94.2,5
+how does penicillin work,"Penicillin works by inhibiting the synthesis of bacterial cell walls, causing the bacteria to burst and die.",0.0,0.0,74.8,5
+what is inflation in economics,Inflation is a general increase in prices and fall in the purchasing power of money over time.,0.2,0.0,81.16,5
+what is the function of red blood cells,Red blood cells carry oxygen from the lungs to body tissues and bring carbon dioxide back to the lungs.,0.4,1.0,74.39,5
+what is the chemical formula for water,The chemical formula for water is H2O.,0.6,1.0,75.98,5
+what is renewable energy,"Renewable energy is energy derived from natural resources that replenish themselves faster than they are consumed, such as solar, wind, and hydro.",1.0,0.5,107.23,5
+what is the largest planet in our solar system,Jupiter is the largest planet in our solar system.,0.0,0.0,80.52,5
+what causes earthquakes,"Earthquakes are caused by the sudden release of energy in Earth's crust that creates seismic waves, usually along tectonic fault lines.",0.2,0.5,73.11,5
+who wrote hamlet,William Shakespeare wrote the tragedy Hamlet.,0.67,0.0,79.08,5
+what is the primary gas in earth atmosphere,"Nitrogen is the primary gas in Earth's atmosphere, making up about 78 percent.",0.0,0.0,76.16,5
+how do airplanes generate lift,Airplanes generate lift through their wings (airfoils) creating a pressure difference between the upper and lower surfaces as air moves over them.,0.0,0.0,90.29,5
+what is the freezing point of water in celsius,The freezing point of water is 0 degrees Celsius at standard atmospheric pressure.,0.9,1.0,60.61,5
+what is machine learning,Machine learning is a branch of artificial intelligence focused on building applications that learn from data and improve their accuracy over time without being explicitly programmed.,0.0,0.0,295.37,5
