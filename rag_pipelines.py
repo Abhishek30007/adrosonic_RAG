@@ -250,12 +250,13 @@ Example format:
         try:
             res = self.llm.invoke(prompt)
             content = res.content.strip()
-            if content.startswith("```"):
-                content = content.split("```")[1]
-                if content.startswith("json"):
-                    content = content[4:]
-                content = content.strip()
-            data = json.loads(content)
+            
+            import re
+            json_match = re.search(r"\{.*\}", content, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group(0))
+            else:
+                data = json.loads(content)
             
             precision = float(data.get("context_precision", 0.85))
             recall = float(data.get("context_recall", 0.85))
