@@ -187,8 +187,28 @@ def main() -> None:
         top_k = st.slider("Top-K Passages", min_value=1, max_value=10, value=config.DEFAULT_TOP_K)
 
         st.markdown("---")
-        st.subheader("📊 Offline Benchmark Scorecard")
-        st.caption("Aggregate 20-QA Test Suite Baseline")
+        # Live Session Telemetry (Updates dynamically on each search)
+        st.subheader("⚡ Latest Live Query Telemetry")
+        if "last_run" in st.session_state:
+            lr = st.session_state["last_run"]
+            st.caption(f"Query: *\"{lr.get('query', '')[:35]}...\"*")
+            col_l1, col_l2 = st.columns(2)
+            with col_l1:
+                st.metric("Live Precision", f"{lr.get('precision', 0.0):.3f}" if lr.get("has_gt") else "N/A")
+            with col_l2:
+                st.metric("Live Recall", f"{lr.get('recall', 0.0):.3f}" if lr.get("has_gt") else "N/A")
+
+            col_l3, col_l4 = st.columns(2)
+            with col_l3:
+                st.metric("Vector SLA", f"{lr.get('retrieval_ms', 0.0):.1f} ms", delta="< 300ms SLA" if lr.get('retrieval_ms', 0.0) <= 300 else "Exceeded")
+            with col_l4:
+                st.metric("LLM Gen", f"{lr.get('gen_ms', 0.0):.1f} ms")
+        else:
+            st.info("Run a search query in Tab 1 to see live per-query telemetry here.")
+
+        st.markdown("---")
+        st.subheader("📊 Offline 20-QA Suite Baseline")
+        st.caption("Pre-computed 20-question batch benchmark (`phase2_hybrid_metrics.csv`)")
 
         df_p1 = load_metrics_df(config.PHASE1_METRICS_PATH)
         df_p2 = load_metrics_df(config.PHASE2_METRICS_PATH)
@@ -206,13 +226,13 @@ def main() -> None:
 
         col_s1, col_s2 = st.columns(2)
         with col_s1:
-            st.metric("P2 Precision", f"{p2_prec:.3f}", delta=f"{prec_delta:+.1f}% vs P1")
+            st.metric("Suite Precision", f"{p2_prec:.3f}", delta=f"{prec_delta:+.1f}% vs P1")
         with col_s2:
-            st.metric("P2 Recall", f"{p2_rec:.3f}", delta=f"{rec_delta:+.1f}% vs P1")
+            st.metric("Suite Recall", f"{p2_rec:.3f}", delta=f"{rec_delta:+.1f}% vs P1")
 
         col_s3, col_s4 = st.columns(2)
         with col_s3:
-            st.metric("P95 Latency", f"{p2_lat:.1f} ms", delta=f"{p2_lat - p1_lat:+.1f} ms", delta_color="inverse")
+            st.metric("Suite P95 Latency", f"{p2_lat:.1f} ms", delta=f"{p2_lat - p1_lat:+.1f} ms", delta_color="inverse")
         with col_s4:
             st.metric("Latency SLA", "< 300 ms", delta="PASSED ✅")
 
@@ -335,6 +355,17 @@ def main() -> None:
                             context_passages=context_texts,
                         )
 
+                # Save telemetry to session state for sidebar live view
+                st.session_state["last_run"] = {
+                    "query": query_text,
+                    "precision": live_precision,
+                    "recall": live_recall,
+                    "has_gt": has_ground_truth,
+                    "retrieval_ms": retrieval_latency_ms,
+                    "gen_ms": gen_latency_ms,
+                    "eval_ms": eval_latency_ms,
+                }
+
                 # =========================================================
                 # UI RENDER SECTION 1: SYNTHESIZED ANSWER (PIPELINE 1)
                 # =========================================================
@@ -434,6 +465,47 @@ def main() -> None:
             "Evaluation across 20 benchmark QA pairs scored with **ChatGroq (`GROQ_RAGAS_API_KEY`)** on "
             "**Context Precision**, **Context Recall**, and **Retrieval Latency**."
         )
+
+        col_run_b1, col_run_b2 = st.columns([2, 3])
+        with col_run_b1:
+            run_live_eval_btn = st.button("▶️ Run Live 20-QA Evaluation Suite Now", type="primary", use_container_width=True)
+        with col_run_b2:
+            st.caption("Executes live vector retrieval + Groq LLM-as-a-judge across all 20 benchmark questions and refreshes baseline.")
+
+        if run_live_eval_btn:
+            retriever = _get_cached_hybrid_retriever()
+            ragas_evaluator = _get_cached_ragas_evaluator()
+            if not ragas_evaluator:
+                st.error("Live RAGAS Evaluator not initialized. Check GROQ_RAGAS_API_KEY.")
+            else:
+                progress_bar = st.progress(0, text="Running live benchmark...")
+                eval_records = []
+                for i, qa in enumerate(BENCHMARK_QA_MAP):
+                    progress_bar.progress((i + 1) / len(BENCHMARK_QA_MAP), text=f"Evaluating [{i+1}/20]: {qa['question'][:30]}...")
+                    t0 = time.perf_counter()
+                    docs = retriever.search(query=qa["question"], mode="hybrid", top_k=config.DEFAULT_TOP_K)
+                    lat_ms = (time.perf_counter() - t0) * 1000
+                    ctx_list = [d.text for d in docs]
+                    prec, rec, reason, _ = ragas_evaluator.evaluate(
+                        question=qa["question"],
+                        ground_truth=qa["ground_truth"],
+                        context_passages=ctx_list,
+                    )
+                    eval_records.append({
+                        "question": qa["question"],
+                        "ground_truth": qa["ground_truth"],
+                        "category": qa["category"],
+                        "context_precision": prec,
+                        "context_recall": rec,
+                        "retrieval_latency_ms": lat_ms,
+                    })
+                    time.sleep(0.1)
+
+                new_df = pd.DataFrame(eval_records)
+                new_df.to_csv(config.PHASE2_METRICS_PATH, index=False)
+                progress_bar.empty()
+                st.success("🎉 Live 20-QA Benchmark complete! Metrics refreshed.")
+                st.rerun()
 
         col_m1, col_m2, col_m3 = st.columns(3)
         with col_m1:
