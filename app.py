@@ -1,11 +1,12 @@
-"""Enterprise Streamlit Application: Phase 2 Hybrid Retrieval & RAGAS Benchmark Suite.
+"""Enterprise Streamlit Application: Dual-Pipeline RAG Architecture.
 
 Features:
-- Dual-Mode Search: Dense (BGE) vs Hybrid (Dense + BM25 RRF).
-- Pre-retrieval Metadata Filtering (Category) using Qdrant FieldCondition.
-- Side-by-side Phase 1 vs Phase 2 RAGAS Metrics Scoreboard (Precision & Recall).
-- Live Index CRUD Management (Real-time Upsert and Delete without reindexing).
-- Sub-300ms p95 SLA Latency Telemetry.
+- Pipeline 1: RAG Generation Engine (Answer Synthesis powered by GROQ_API_KEY).
+- Pipeline 2: Live RAGAS Evaluation Engine (Real-time Context Precision & Recall via GROQ_RAGAS_API_KEY).
+- Isolated Vector Retrieval Latency profiling against the <300ms p95 SLA.
+- Ground-Truth Benchmark selector & custom query ground-truth support.
+- Pre-retrieval Category Filtering using Qdrant FieldCondition.
+- Real-time Live Index CRUD Operations.
 """
 
 from pathlib import Path
@@ -17,10 +18,15 @@ import streamlit as st
 
 from config import config
 from hybrid_retriever import QdrantHybridRetriever, RetrievedDocument
+from rag_pipelines import (
+    BENCHMARK_QA_MAP,
+    LiveRAGASEvaluator,
+    RAGGenerationEngine,
+)
 
 # Streamlit Page Configuration
 st.set_page_config(
-    page_title="Enterprise RAG: Hybrid Search, RAGAS & Live CRUD",
+    page_title="Enterprise Dual-Pipeline RAG & Live RAGAS",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -38,11 +44,27 @@ st.markdown(
         border: 1px solid #2e3d5b;
         box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
     }
+    .answer-card {
+        background: linear-gradient(135deg, #141f36 0%, #1e293b 100%);
+        border-radius: 12px;
+        padding: 22px;
+        margin-bottom: 20px;
+        border: 1px solid #3b82f6;
+        box-shadow: 0 10px 20px -5px rgba(59, 130, 246, 0.2);
+    }
+    .eval-card {
+        background: linear-gradient(135deg, #162420 0%, #1c332b 100%);
+        border-radius: 12px;
+        padding: 20px;
+        margin-bottom: 20px;
+        border: 1px solid #10b981;
+        box-shadow: 0 10px 20px -5px rgba(16, 185, 129, 0.2);
+    }
     .passage-card {
         background-color: #141b2d;
         border-radius: 12px;
         padding: 18px;
-        margin-bottom: 16px;
+        margin-bottom: 14px;
         border: 1px solid #263352;
         border-left: 5px solid #3b82f6;
         box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.25);
@@ -59,7 +81,6 @@ st.markdown(
         border-radius: 6px;
         font-weight: 700;
         font-size: 0.85rem;
-        letter-spacing: 0.3px;
     }
     .badge-dense {
         background: linear-gradient(135deg, #2563eb 0%, #3b82f6 100%);
@@ -108,19 +129,21 @@ def _get_cached_hybrid_retriever() -> QdrantHybridRetriever:
     return QdrantHybridRetriever()
 
 
-def load_hybrid_retriever() -> QdrantHybridRetriever | None:
-    """Safely obtain retriever handle with graceful exception reporting."""
+@st.cache_resource(show_spinner="Initializing Pipeline 1: RAG Generation Engine (GROQ_API_KEY)...")
+def _get_cached_generation_engine() -> RAGGenerationEngine | None:
     try:
-        return _get_cached_hybrid_retriever()
+        return RAGGenerationEngine()
     except Exception as e:
-        err = str(e)
-        if "already accessed by another instance" in err or "Permission denied" in err:
-            st.error(
-                "🔒 **Database Lock Active**: Ingestion process or server is accessing `qdrant_storage`. "
-                "Please wait or terminate background process and refresh."
-            )
-        else:
-            st.error(f"⚠️ **Retriever Initialization Error**: {err}")
+        st.sidebar.warning(f"Generation Engine note: {str(e)[:50]}")
+        return None
+
+
+@st.cache_resource(show_spinner="Initializing Pipeline 2: Live RAGAS Evaluator (GROQ_RAGAS_API_KEY)...")
+def _get_cached_ragas_evaluator() -> LiveRAGASEvaluator | None:
+    try:
+        return LiveRAGASEvaluator()
+    except Exception as e:
+        st.sidebar.warning(f"RAGAS Evaluator note: {str(e)[:50]}")
         return None
 
 
@@ -137,7 +160,7 @@ def load_metrics_df(file_path: str) -> pd.DataFrame | None:
 
 def main() -> None:
     # -------------------------------------------------------------
-    # SIDEBAR: Search Controls & Comparative Evaluation Scoreboard
+    # SIDEBAR: Search Controls & Static Benchmark Scorecard
     # -------------------------------------------------------------
     with st.sidebar:
         st.title("⚙️ RAG Engine Controls")
@@ -145,31 +168,31 @@ def main() -> None:
 
         # 1. Retrieval Strategy Toggle
         retrieval_mode = st.radio(
-            "🎯 Retrieval Method",
+            "🎯 Retrieval Strategy",
             options=["Hybrid", "Dense"],
             index=0,
-            help="Hybrid uses Reciprocal Rank Fusion (RRF) combining BGE dense embeddings with BM25 sparse lexical tokens.",
+            help="Hybrid uses Reciprocal Rank Fusion (RRF) combining BGE dense embeddings with BM25 sparse tokens.",
         )
 
-        # 2. Metadata Category Filter (Pre-Retrieval)
+        # 2. Metadata Category Filter
         category_options = ["All"] + list(config.CATEGORIES)
         selected_category = st.selectbox(
             "🏷️ Pre-retrieval Category Filter",
             options=category_options,
             index=0,
-            help="Applies Qdrant FieldCondition match filter directly inside the vector search query before scoring.",
+            help="Applies Qdrant FieldCondition match filter before vector scoring.",
         )
 
         # 3. Top-K Slider
         top_k = st.slider("Top-K Passages", min_value=1, max_value=10, value=config.DEFAULT_TOP_K)
 
         st.markdown("---")
-        st.subheader("📊 RAGAS Scoreboard Summary")
+        st.subheader("📊 Offline Benchmark Scorecard")
+        st.caption("Aggregate 20-QA Test Suite Baseline")
 
         df_p1 = load_metrics_df(config.PHASE1_METRICS_PATH)
         df_p2 = load_metrics_df(config.PHASE2_METRICS_PATH)
 
-        # Calculate metrics
         p1_prec = df_p1["context_precision"].mean() if df_p1 is not None and not df_p1.empty else 0.375
         p1_rec = df_p1["context_recall"].mean() if df_p1 is not None and not df_p1.empty else 0.450
         p1_lat = df_p1["retrieval_latency_ms"].quantile(0.95) if df_p1 is not None and not df_p1.empty else 150.0
@@ -183,17 +206,9 @@ def main() -> None:
 
         col_s1, col_s2 = st.columns(2)
         with col_s1:
-            st.metric(
-                "Context Precision",
-                f"{p2_prec:.3f}",
-                delta=f"{prec_delta:+.1f}% vs P1",
-            )
+            st.metric("P2 Precision", f"{p2_prec:.3f}", delta=f"{prec_delta:+.1f}% vs P1")
         with col_s2:
-            st.metric(
-                "Context Recall",
-                f"{p2_rec:.3f}",
-                delta=f"{rec_delta:+.1f}% vs P1",
-            )
+            st.metric("P2 Recall", f"{p2_rec:.3f}", delta=f"{rec_delta:+.1f}% vs P1")
 
         col_s3, col_s4 = st.columns(2)
         with col_s3:
@@ -203,12 +218,10 @@ def main() -> None:
 
         st.markdown("---")
         st.markdown(
-            f"""
-            **Index Configuration**:
-            - **Dense:** `{config.EMBEDDING_MODEL_NAME}` (384-d)
-            - **Sparse:** `{config.SPARSE_MODEL_NAME}`
-            - **Fusion:** `Reciprocal Rank Fusion (RRF)`
-            - **Collection:** `{config.HYBRID_COLLECTION_NAME}`
+            """
+            **Dual Key Infrastructure**:
+            - 🔑 **Pipeline 1:** `GROQ_API_KEY` (RAG Answer Generator)
+            - ⚖️ **Pipeline 2:** `GROQ_RAGAS_API_KEY` (Live Judge)
             """
         )
 
@@ -216,132 +229,219 @@ def main() -> None:
     # MAIN PANEL: Navigation Tabs
     # -------------------------------------------------------------
     tab_search, tab_evaluation, tab_crud = st.tabs([
-        "🔍 Live Search Engine",
-        "📊 Side-by-Side RAGAS Evaluation",
+        "🔍 Live Dual-Pipeline Search & Evaluation",
+        "📊 Side-by-Side RAGAS Benchmark Scoreboard",
         "🛠️ Live Index CRUD Management",
     ])
 
     # =============================================================
-    # TAB 1: Live Search Engine
+    # TAB 1: Live Dual-Pipeline Search & Evaluation
     # =============================================================
     with tab_search:
-        if retrieval_mode == "Dense":
-            st.subheader("⚡ Pure Dense Retrieval (Phase 1)")
-            st.caption("Sub-300ms Semantic Vector Search with BAAI/bge-small-en-v1.5 and Qdrant")
-        else:
-            st.subheader("⚡ Hybrid RRF Retrieval with Pre-Filtering (Phase 2)")
-            st.caption("Sub-300ms Hybrid Search (Dense BGE + Sparse BM25 + Reciprocal Rank Fusion) with Qdrant FieldCondition")
+        st.title("⚡ Enterprise RAG: Live Retrieval, Generation & RAGAS Judge")
+        st.caption("Sub-300ms Isolated Vector Search + Grounded Answer Synthesis (Pipeline 1) + Live RAGAS Scoring (Pipeline 2)")
 
-        # Search Box
-        col_input, col_btn = st.columns([5, 1])
-        with col_input:
-            default_query = "what is the normal resting heart rate for adults"
-            query_text = st.text_input(
-                "Enter Natural Language Query",
-                value=default_query,
-                placeholder="Type a question or technical search term...",
-                key="main_search_input",
+        # Query Input Mode Selection
+        query_mode = st.radio(
+            "Select Query Input Mode:",
+            options=["🎯 Predefined Benchmark QA (Pre-stored Ground Truth)", "✍️ Custom Natural Language Query"],
+            horizontal=True,
+        )
+
+        query_text = ""
+        ground_truth_text = ""
+
+        if query_mode == "🎯 Predefined Benchmark QA (Pre-stored Ground Truth)":
+            benchmark_questions = [item["question"] for item in BENCHMARK_QA_MAP]
+            selected_qa_index = st.selectbox(
+                "Choose Benchmark Question:",
+                options=range(len(benchmark_questions)),
+                format_func=lambda i: f"[{BENCHMARK_QA_MAP[i]['category'].upper()}] {benchmark_questions[i]}",
+                index=0,
             )
-        with col_btn:
-            st.write("")
-            st.write("")
-            search_clicked = st.button("🚀 Search", type="primary", use_container_width=True, key="search_btn")
+            query_text = BENCHMARK_QA_MAP[selected_qa_index]["question"]
+            ground_truth_text = BENCHMARK_QA_MAP[selected_qa_index]["ground_truth"]
 
-        if search_clicked or query_text:
+            st.info(f"🎯 **Target Ground Truth:** *\"{ground_truth_text}\"*")
+
+        else:
+            col_c1, col_c2 = st.columns([3, 2])
+            with col_c1:
+                query_text = st.text_input(
+                    "Enter Custom Query:",
+                    value="what is the chemical formula for water",
+                    placeholder="Type your question...",
+                )
+            with col_c2:
+                ground_truth_text = st.text_input(
+                    "Optional Ground Truth Answer (for Live RAGAS Scoring):",
+                    value="The chemical formula for water is H2O.",
+                    placeholder="Enter factual answer to compute live precision/recall...",
+                )
+
+        search_btn = st.button("🚀 Execute RAG Dual Pipeline", type="primary", use_container_width=True)
+
+        if search_btn or query_text:
             if not query_text.strip():
-                st.warning("Please enter a non-empty search query.")
+                st.warning("Please enter a valid search query.")
             else:
-                retriever = load_hybrid_retriever()
-                if retriever is not None:
-                    mode_param = "hybrid" if retrieval_mode == "Hybrid" else "dense"
-                    filter_param = None if selected_category == "All" else selected_category
+                retriever = _get_cached_hybrid_retriever()
+                gen_engine = _get_cached_generation_engine()
+                ragas_evaluator = _get_cached_ragas_evaluator()
 
-                    start_time = time.perf_counter()
-                    results: list[RetrievedDocument] = retriever.search(
-                        query=query_text,
-                        mode=mode_param,
-                        category_filter=filter_param,
-                        top_k=top_k,
+                # ---------------------------------------------------------
+                # STEP 1: ISOLATED VECTOR RETRIEVAL TIMER (<300ms SLA Target)
+                # ---------------------------------------------------------
+                mode_param = "hybrid" if retrieval_mode == "Hybrid" else "dense"
+                filter_param = None if selected_category == "All" else selected_category
+
+                retrieval_start = time.perf_counter()
+                results: list[RetrievedDocument] = retriever.search(
+                    query=query_text,
+                    mode=mode_param,
+                    category_filter=filter_param,
+                    top_k=top_k,
+                )
+                retrieval_latency_ms = (time.perf_counter() - retrieval_start) * 1000
+
+                sla_pass = retrieval_latency_ms <= config.LATENCY_TARGET_P95_MS
+                sla_badge = "✅ SLA PASS (<300ms)" if sla_pass else "⚠️ SLA WARNING (>300ms)"
+
+                context_texts = [d.text for d in results if d.text.strip()]
+
+                # ---------------------------------------------------------
+                # STEP 2: PIPELINE 1 — RAG SYNTHESIZED ANSWER (GROQ_API_KEY)
+                # ---------------------------------------------------------
+                generated_answer = "Generation Engine uninitialized."
+                gen_latency_ms = 0.0
+                if gen_engine:
+                    with st.spinner("🤖 Pipeline 1: Generating grounded answer with ChatGroq (GROQ_API_KEY)..."):
+                        generated_answer, gen_latency_ms = gen_engine.generate_answer(
+                            query=query_text,
+                            context_passages=context_texts,
+                        )
+
+                # ---------------------------------------------------------
+                # STEP 3: PIPELINE 2 — LIVE RAGAS EVALUATION (GROQ_RAGAS_API_KEY)
+                # ---------------------------------------------------------
+                has_ground_truth = bool(ground_truth_text and ground_truth_text.strip())
+                live_precision, live_recall, live_reasoning, eval_latency_ms = 0.0, 0.0, "", 0.0
+
+                if has_ground_truth and ragas_evaluator:
+                    with st.spinner("⚖️ Pipeline 2: Scoring Context Precision & Recall with LLM Judge (GROQ_RAGAS_API_KEY)..."):
+                        live_precision, live_recall, live_reasoning, eval_latency_ms = ragas_evaluator.evaluate(
+                            question=query_text,
+                            ground_truth=ground_truth_text,
+                            context_passages=context_texts,
+                        )
+
+                # =========================================================
+                # UI RENDER SECTION 1: SYNTHESIZED ANSWER (PIPELINE 1)
+                # =========================================================
+                st.markdown("---")
+                st.markdown("### 🤖 1. Synthesized Answer (Pipeline 1: RAG Generation)")
+                st.markdown(
+                    f"""
+                    <div class="answer-card">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+                            <span style="font-weight: 700; color: #60a5fa; font-size: 1.05rem;">Grounded LLM Response</span>
+                            <span class="score-badge">LLM Latency: {gen_latency_ms:.1f} ms</span>
+                        </div>
+                        <p style="font-size: 1.05rem; line-height: 1.65; color: #f8fafc; margin: 0;">{generated_answer}</p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                # =========================================================
+                # UI RENDER SECTION 2: LIVE RAGAS EVALUATION (PIPELINE 2)
+                # =========================================================
+                st.markdown("### ⚖️ 2. Live RAGAS Scorecard (Pipeline 2: LLM Judge)")
+                if has_ground_truth:
+                    col_e1, col_e2, col_e3 = st.columns([1, 1, 2])
+                    with col_e1:
+                        st.metric("Live Context Precision", f"{live_precision:.3f}")
+                    with col_e2:
+                        st.metric("Live Context Recall", f"{live_recall:.3f}")
+                    with col_e3:
+                        st.metric("Judge Latency", f"{eval_latency_ms:.1f} ms", delta="Dedicated Key ✅")
+
+                    st.markdown(
+                        f"""
+                        <div class="eval-card">
+                            <strong style="color: #34d399;">🧑‍⚖️ LLM Judge Assessment:</strong> {live_reasoning}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
                     )
-                    elapsed_ms = (time.perf_counter() - start_time) * 1000
+                else:
+                    st.info(
+                        "ℹ️ **Ground truth not provided.** Live RAGAS scoring skipped for this custom query. "
+                        "Add a ground truth above to evaluate Context Precision & Recall."
+                    )
 
-                    sla_pass = elapsed_ms <= config.LATENCY_TARGET_P95_MS
-                    sla_badge = "✅ SLA PASS (<300ms)" if sla_pass else "⚠️ SLA WARNING (>300ms)"
+                # =========================================================
+                # UI RENDER SECTION 3: RETRIEVED PASSAGES (ISOLATED SLA)
+                # =========================================================
+                st.markdown("### 📚 3. Retrieved Passages & Vector SLA Telemetry")
+                col_res_header, col_method_label, col_telemetry = st.columns([3, 2, 2])
+                with col_res_header:
+                    st.write(f"**Top-{len(results)} Passages Retrieved from Qdrant**")
+                with col_method_label:
+                    badge_class = "badge-hybrid" if retrieval_mode == "Hybrid" else "badge-dense"
+                    filter_label = f" | Filter: {selected_category}" if selected_category != "All" else ""
+                    st.markdown(
+                        f"<div><span class='{badge_class}'>Strategy: {retrieval_mode}{filter_label}</span></div>",
+                        unsafe_allow_html=True,
+                    )
+                with col_telemetry:
+                    st.markdown(
+                        f"<div style='text-align: right;'><span class='{'latency-pass' if sla_pass else 'latency-warn'}'>{sla_badge} — {retrieval_latency_ms:.2f} ms</span></div>",
+                        unsafe_allow_html=True,
+                    )
 
-                    st.markdown("---")
-                    col_res_header, col_method_label, col_telemetry = st.columns([3, 2, 2])
-                    with col_res_header:
-                        st.subheader(f"Retrieved Top-{len(results)} Passages")
-                    with col_method_label:
-                        badge_class = "badge-hybrid" if retrieval_mode == "Hybrid" else "badge-dense"
-                        filter_label = f" | Filter: {selected_category}" if selected_category != "All" else ""
+                if not results:
+                    st.warning("No matching passages found. Try selecting 'All' for the category filter.")
+                else:
+                    for idx, doc in enumerate(results, start=1):
+                        category_val = doc.metadata.get("category", "general")
+                        source_val = doc.metadata.get("source", "ms_marco_v1.1")
+
                         st.markdown(
-                            f"<div style='padding-top: 10px;'><span class='{badge_class}'>Method: {retrieval_mode}{filter_label}</span></div>",
-                            unsafe_allow_html=True,
-                        )
-                    with col_telemetry:
-                        st.markdown(
-                            f"<div style='text-align: right; padding-top: 10px;'><span class='{'latency-pass' if sla_pass else 'latency-warn'}'>{sla_badge} — {elapsed_ms:.2f} ms</span></div>",
-                            unsafe_allow_html=True,
-                        )
-
-                    if not results:
-                        st.warning("No matching passages found. If a category filter is applied, try selecting 'All'.")
-                    else:
-                        for idx, doc in enumerate(results, start=1):
-                            category_val = doc.metadata.get("category", "general")
-                            source_val = doc.metadata.get("source", "ms_marco_v1.1")
-
-                            st.markdown(
-                                f"""
-                                <div class="passage-card">
-                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                                        <div>
-                                            <strong style="font-size: 1.05rem; color: #60a5fa;">#Rank {idx} &nbsp;|&nbsp; ID: {doc.id}</strong>
-                                            &nbsp; <span class="category-badge">🏷️ {category_val}</span>
-                                            &nbsp; <span style="color: #94a3b8; font-size: 0.85rem;">Method: {doc.method}</span>
-                                        </div>
-                                        <span class="score-badge">Score: {doc.score:.4f}</span>
+                            f"""
+                            <div class="passage-card">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                    <div>
+                                        <strong style="font-size: 1.02rem; color: #60a5fa;">#Rank {idx} &nbsp;|&nbsp; ID: {doc.id}</strong>
+                                        &nbsp; <span class="category-badge">🏷️ {category_val}</span>
+                                        &nbsp; <span style="color: #94a3b8; font-size: 0.85rem;">Method: {doc.method}</span>
                                     </div>
-                                    <p style="color: #e2e8f0; font-size: 0.96rem; line-height: 1.65; margin-bottom: 6px;">{doc.text}</p>
-                                    <div style="font-size: 0.8rem; color: #64748b;">Source: {source_val}</div>
+                                    <span class="score-badge">Score: {doc.score:.4f}</span>
                                 </div>
-                                """,
-                                unsafe_allow_html=True,
-                            )
-                            with st.expander(f"Metadata Inspector (ID: {doc.id})"):
-                                st.json(doc.metadata)
+                                <p style="color: #e2e8f0; font-size: 0.95rem; line-height: 1.6; margin-bottom: 6px;">{doc.text}</p>
+                                <div style="font-size: 0.8rem; color: #64748b;">Source: {source_val}</div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
 
     # =============================================================
-    # TAB 2: Side-by-Side RAGAS Evaluation Comparison
+    # TAB 2: Side-by-Side RAGAS Benchmark Scoreboard
     # =============================================================
     with tab_evaluation:
         st.subheader("📊 RAGAS Evaluation: Phase 1 (Dense) vs Phase 2 (Hybrid RRF)")
         st.markdown(
-            "Rigorous evaluation across 20 benchmark QA pairs scored with **LLM-as-a-Judge (ChatGroq)** on "
+            "Evaluation across 20 benchmark QA pairs scored with **ChatGroq (`GROQ_RAGAS_API_KEY`)** on "
             "**Context Precision**, **Context Recall**, and **Retrieval Latency**."
         )
 
         col_m1, col_m2, col_m3 = st.columns(3)
         with col_m1:
-            st.metric(
-                "Mean Context Precision",
-                f"{p2_prec:.3f}",
-                delta=f"{prec_delta:+.1f}% vs Phase 1 ({p1_prec:.3f})",
-            )
+            st.metric("Mean Context Precision", f"{p2_prec:.3f}", delta=f"{prec_delta:+.1f}% vs Phase 1 ({p1_prec:.3f})")
         with col_m2:
-            st.metric(
-                "Mean Context Recall",
-                f"{p2_rec:.3f}",
-                delta=f"{rec_delta:+.1f}% vs Phase 1 ({p1_rec:.3f})",
-            )
+            st.metric("Mean Context Recall", f"{p2_rec:.3f}", delta=f"{rec_delta:+.1f}% vs Phase 1 ({p1_rec:.3f})")
         with col_m3:
-            st.metric(
-                "P95 Retrieval Latency",
-                f"{p2_lat:.1f} ms",
-                delta=f"{p2_lat - p1_lat:+.1f} ms vs Phase 1 ({p1_lat:.1f} ms)",
-                delta_color="inverse",
-            )
+            st.metric("P95 Retrieval Latency", f"{p2_lat:.1f} ms", delta=f"{p2_lat - p1_lat:+.1f} ms", delta_color="inverse")
 
         st.markdown("---")
         st.subheader("📋 20 Benchmark QA Pairs: Side-by-Side Breakdown")
@@ -361,18 +461,13 @@ def main() -> None:
             st.dataframe(merged_df, use_container_width=True)
         elif df_p2 is not None:
             st.dataframe(df_p2, use_container_width=True)
-        else:
-            st.info("Run `evaluate_baseline.py` and `benchmark_and_evaluate.py` to populate metrics.")
 
     # =============================================================
     # TAB 3: Live Index CRUD Management
     # =============================================================
     with tab_crud:
         st.subheader("🛠️ Live Index Management (Dynamic CRUD without Full Reindexing)")
-        st.markdown(
-            "Perform immediate real-time **Upsert** and **Delete** operations directly against the active Qdrant vector database. "
-            "Newly upserted documents are embedded on-the-fly and immediately searchable."
-        )
+        st.markdown("Direct real-time **Upsert** and **Delete** operations against the active Qdrant vector database.")
 
         sub_tab_upsert, sub_tab_delete, sub_tab_test = st.tabs([
             "➕ Upsert Document",
@@ -398,18 +493,12 @@ def main() -> None:
                 upsert_submit = st.form_submit_button("💾 Upsert to Live Index", type="primary")
 
                 if upsert_submit:
-                    retriever = load_hybrid_retriever()
-                    if retriever:
-                        ok = retriever.upsert_document(
-                            passage_id=u_id,
-                            text=u_text,
-                            source=u_source,
-                            category=u_category,
-                        )
-                        if ok:
-                            st.success(f"✅ Successfully embedded and upserted Document ID '{u_id}' into live index!")
-                        else:
-                            st.error(f"❌ Failed to upsert document ID '{u_id}'.")
+                    retriever = _get_cached_hybrid_retriever()
+                    ok = retriever.upsert_document(passage_id=u_id, text=u_text, source=u_source, category=u_category)
+                    if ok:
+                        st.success(f"✅ Successfully embedded and upserted Document ID '{u_id}' into live index!")
+                    else:
+                        st.error(f"❌ Failed to upsert document ID '{u_id}'.")
 
         with sub_tab_delete:
             with st.form("delete_form", clear_on_submit=False):
@@ -422,13 +511,12 @@ def main() -> None:
                     delete_submit = st.form_submit_button("🗑️ Delete from Live Index", type="primary")
 
                 if delete_submit:
-                    retriever = load_hybrid_retriever()
-                    if retriever:
-                        ok = retriever.delete_document(passage_id=d_id)
-                        if ok:
-                            st.success(f"✅ Successfully deleted Document ID '{d_id}' from live index!")
-                        else:
-                            st.error(f"❌ Failed to delete document ID '{d_id}'.")
+                    retriever = _get_cached_hybrid_retriever()
+                    ok = retriever.delete_document(passage_id=d_id)
+                    if ok:
+                        st.success(f"✅ Successfully deleted Document ID '{d_id}' from live index!")
+                    else:
+                        st.error(f"❌ Failed to delete document ID '{d_id}'.")
 
         with sub_tab_test:
             st.markdown("##### Query for newly updated or deleted records:")
@@ -441,11 +529,10 @@ def main() -> None:
                 test_search_btn = st.button("🔎 Verify Live Search", key="crud_verify_btn")
 
             if test_search_btn or test_query_txt:
-                retriever = load_hybrid_retriever()
-                if retriever:
-                    docs = retriever.search(query=test_query_txt, mode="hybrid", top_k=3)
-                    for d in docs:
-                        st.info(f"**[ID: {d.id}] (Score: {d.score:.4f}, Method: {d.method})** — {d.text}")
+                retriever = _get_cached_hybrid_retriever()
+                docs = retriever.search(query=test_query_txt, mode="hybrid", top_k=3)
+                for d in docs:
+                    st.info(f"**[ID: {d.id}] (Score: {d.score:.4f}, Method: {d.method})** — {d.text}")
 
 
 if __name__ == "__main__":
