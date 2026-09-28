@@ -142,11 +142,19 @@ class RAGGenerationEngine:
 
     def generate_answer(self, query: str, context_passages: list[str]) -> tuple[str, float]:
         """Generate grounded answer strictly using retrieved context passages."""
-        start = time.perf_counter()
-        
-        if not context_passages:
-            return "No relevant passages were retrieved to answer this query.", 0.0
+        ans, prompt_ms, llm_ms = self.generate_answer_detailed(query, context_passages)
+        return ans, prompt_ms + llm_ms
 
+    def generate_answer_detailed(self, query: str, context_passages: list[str]) -> tuple[str, float, float]:
+        """Generate grounded answer with split prompt assembly & Groq LLM latency.
+
+        Returns:
+            (answer_text, prompt_assembly_ms, llm_generation_ms)
+        """
+        if not context_passages:
+            return "No relevant passages were retrieved to answer this query.", 0.0, 0.0
+
+        t_prompt = time.perf_counter()
         ctx_formatted = "\n\n".join([f"[Passage {i+1}]: {p}" for i, p in enumerate(context_passages)])
         
         prompt = f"""You are an enterprise AI assistant powering a Retrieval-Augmented Generation (RAG) system.
@@ -161,15 +169,17 @@ User Question:
 {query}
 
 Answer:"""
+        prompt_assembly_ms = (time.perf_counter() - t_prompt) * 1000
 
+        t_llm = time.perf_counter()
         try:
             response = self.llm.invoke(prompt)
-            latency_ms = (time.perf_counter() - start) * 1000
-            return response.content.strip(), latency_ms
+            llm_generation_ms = (time.perf_counter() - t_llm) * 1000
+            return response.content.strip(), prompt_assembly_ms, llm_generation_ms
         except Exception as e:
             logger.error("Generation error: %s", str(e))
-            latency_ms = (time.perf_counter() - start) * 1000
-            return f"Answer generation encountered an error: {str(e)}", latency_ms
+            llm_generation_ms = (time.perf_counter() - t_llm) * 1000
+            return f"Answer generation encountered an error: {str(e)}", prompt_assembly_ms, llm_generation_ms
 
 
 class LiveRAGASEvaluator:
@@ -191,19 +201,28 @@ class LiveRAGASEvaluator:
         ground_truth: str,
         context_passages: list[str],
     ) -> tuple[float, float, str, float]:
-        """Evaluate Context Precision & Context Recall for the current retrieval run.
+        """Evaluate Context Precision & Context Recall for the current retrieval run."""
+        p, r, reason, prompt_ms, llm_ms = self.evaluate_detailed(question, ground_truth, context_passages)
+        return p, r, reason, prompt_ms + llm_ms
+
+    def evaluate_detailed(
+        self,
+        question: str,
+        ground_truth: str,
+        context_passages: list[str],
+    ) -> tuple[float, float, str, float, float]:
+        """Evaluate with split prompt formatting and Groq Judge API latency profiling.
 
         Returns:
-            (context_precision, context_recall, reasoning_explanation, eval_latency_ms)
+            (context_precision, context_recall, reasoning, eval_prompt_ms, eval_llm_ms)
         """
-        start = time.perf_counter()
-        
         if not ground_truth or not ground_truth.strip():
-            return 0.0, 0.0, "No ground truth provided.", 0.0
+            return 0.0, 0.0, "No ground truth provided.", 0.0, 0.0
 
         if not context_passages:
-            return 0.0, 0.0, "No passages retrieved.", (time.perf_counter() - start) * 1000
+            return 0.0, 0.0, "No passages retrieved.", 0.0, 0.0
 
+        t_prompt = time.perf_counter()
         ctx_text = "\n\n".join([f"[{i+1}] {c}" for i, c in enumerate(context_passages)])
         
         prompt = f"""You are an expert Information Retrieval and RAG evaluator.
@@ -225,6 +244,9 @@ Do not output markdown backticks or any preamble.
 Example format:
 {{"context_precision": 0.90, "context_recall": 1.0, "reasoning": "Top passage contains exact ground-truth facts."}}
 """
+        eval_prompt_ms = (time.perf_counter() - t_prompt) * 1000
+
+        t_llm = time.perf_counter()
         try:
             res = self.llm.invoke(prompt)
             content = res.content.strip()
@@ -238,10 +260,10 @@ Example format:
             precision = float(data.get("context_precision", 0.85))
             recall = float(data.get("context_recall", 0.85))
             reasoning = str(data.get("reasoning", "Evaluated via ChatGroq judge."))
-            eval_latency_ms = (time.perf_counter() - start) * 1000
+            eval_llm_ms = (time.perf_counter() - t_llm) * 1000
             
-            return min(max(precision, 0.0), 1.0), min(max(recall, 0.0), 1.0), reasoning, eval_latency_ms
+            return min(max(precision, 0.0), 1.0), min(max(recall, 0.0), 1.0), reasoning, eval_prompt_ms, eval_llm_ms
         except Exception as e:
             logger.warning("RAGAS judge evaluation note: %s", str(e))
-            eval_latency_ms = (time.perf_counter() - start) * 1000
-            return 0.80, 0.80, f"Judge evaluation fallback: {str(e)[:60]}", eval_latency_ms
+            eval_llm_ms = (time.perf_counter() - t_llm) * 1000
+            return 0.80, 0.80, f"Judge evaluation fallback: {str(e)[:60]}", eval_prompt_ms, eval_llm_ms

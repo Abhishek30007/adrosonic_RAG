@@ -315,45 +315,53 @@ def main() -> None:
                 mode_param = "hybrid" if retrieval_mode == "Hybrid" else "dense"
                 filter_param = None if selected_category == "All" else selected_category
 
-                retrieval_start = time.perf_counter()
-                results: list[RetrievedDocument] = retriever.search(
+                # ---------------------------------------------------------
+                # END-TO-END EXECUTION PROFILING
+                # ---------------------------------------------------------
+                e2e_start = time.perf_counter()
+
+                mode_param = "hybrid" if retrieval_mode == "Hybrid" else "dense"
+                filter_param = None if selected_category == "All" else selected_category
+
+                # STEP 1-4: Detailed Vector Retrieval Profiling
+                results, ret_telemetry = retriever.search_detailed(
                     query=query_text,
                     mode=mode_param,
                     category_filter=filter_param,
                     top_k=top_k,
                 )
-                retrieval_latency_ms = (time.perf_counter() - retrieval_start) * 1000
-
+                retrieval_latency_ms = ret_telemetry["retrieval_total_ms"]
                 sla_pass = retrieval_latency_ms <= config.LATENCY_TARGET_P95_MS
                 sla_badge = "✅ SLA PASS (<300ms)" if sla_pass else "⚠️ SLA WARNING (>300ms)"
 
                 context_texts = [d.text for d in results if d.text.strip()]
 
-                # ---------------------------------------------------------
-                # STEP 2: PIPELINE 1 — RAG SYNTHESIZED ANSWER (GROQ_API_KEY)
-                # ---------------------------------------------------------
+                # STEP 5-6: Pipeline 1 (Prompt Assembly + Groq Answer Synthesis)
                 generated_answer = "Generation Engine uninitialized."
-                gen_latency_ms = 0.0
+                gen_prompt_ms = 0.0
+                gen_llm_ms = 0.0
                 if gen_engine:
                     with st.spinner("🤖 Pipeline 1: Generating grounded answer with ChatGroq (GROQ_API_KEY)..."):
-                        generated_answer, gen_latency_ms = gen_engine.generate_answer(
+                        generated_answer, gen_prompt_ms, gen_llm_ms = gen_engine.generate_answer_detailed(
                             query=query_text,
                             context_passages=context_texts,
                         )
 
-                # ---------------------------------------------------------
-                # STEP 3: PIPELINE 2 — LIVE RAGAS EVALUATION (GROQ_RAGAS_API_KEY)
-                # ---------------------------------------------------------
+                # STEP 7: Pipeline 2 (Prompt Assembly + Groq RAGAS LLM Judge)
                 has_ground_truth = bool(ground_truth_text and ground_truth_text.strip())
-                live_precision, live_recall, live_reasoning, eval_latency_ms = 0.0, 0.0, "", 0.0
+                live_precision, live_recall, live_reasoning = 0.0, 0.0, ""
+                eval_prompt_ms, eval_llm_ms = 0.0, 0.0
 
                 if has_ground_truth and ragas_evaluator:
                     with st.spinner("⚖️ Pipeline 2: Scoring Context Precision & Recall with LLM Judge (GROQ_RAGAS_API_KEY)..."):
-                        live_precision, live_recall, live_reasoning, eval_latency_ms = ragas_evaluator.evaluate(
+                        live_precision, live_recall, live_reasoning, eval_prompt_ms, eval_llm_ms = ragas_evaluator.evaluate_detailed(
                             question=query_text,
                             ground_truth=ground_truth_text,
                             context_passages=context_texts,
                         )
+
+                # STEP 8: End-to-End Total Time
+                e2e_total_ms = (time.perf_counter() - e2e_start) * 1000
 
                 # Save telemetry to session state for sidebar live view
                 st.session_state["last_run"] = {
@@ -362,8 +370,9 @@ def main() -> None:
                     "recall": live_recall,
                     "has_gt": has_ground_truth,
                     "retrieval_ms": retrieval_latency_ms,
-                    "gen_ms": gen_latency_ms,
-                    "eval_ms": eval_latency_ms,
+                    "gen_ms": gen_prompt_ms + gen_llm_ms,
+                    "eval_ms": eval_prompt_ms + eval_llm_ms,
+                    "e2e_ms": e2e_total_ms,
                 }
 
                 # =========================================================
@@ -376,7 +385,7 @@ def main() -> None:
                     <div class="answer-card">
                         <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
                             <span style="font-weight: 700; color: #60a5fa; font-size: 1.05rem;">Grounded LLM Response</span>
-                            <span class="score-badge">LLM Latency: {gen_latency_ms:.1f} ms</span>
+                            <span class="score-badge">LLM Latency: {(gen_prompt_ms + gen_llm_ms):.1f} ms</span>
                         </div>
                         <p style="font-size: 1.05rem; line-height: 1.65; color: #f8fafc; margin: 0;">{generated_answer}</p>
                     </div>
@@ -395,7 +404,7 @@ def main() -> None:
                     with col_e2:
                         st.metric("Live Context Recall", f"{live_recall:.3f}")
                     with col_e3:
-                        st.metric("Judge Latency", f"{eval_latency_ms:.1f} ms", delta="Dedicated Key ✅")
+                        st.metric("Judge Latency", f"{(eval_prompt_ms + eval_llm_ms):.1f} ms", delta="Dedicated Key ✅")
 
                     st.markdown(
                         f"""
@@ -455,6 +464,123 @@ def main() -> None:
                             """,
                             unsafe_allow_html=True,
                         )
+
+                # =========================================================
+                # UI RENDER SECTION 4: COLLAPSIBLE LATENCY BREAKDOWN
+                # =========================================================
+                st.markdown("---")
+                with st.expander("⏱️ View Step-by-Step Latency & Execution Breakdown", expanded=False):
+                    st.markdown("#### 🔬 Detailed Microsecond Execution Telemetry")
+                    st.caption("Discrete timing instrumentation captured across every sub-step of the dual-pipeline execution.")
+
+                    # Summary cards row
+                    col_t1, col_t2, col_t3, col_t4 = st.columns(4)
+                    with col_t1:
+                        st.metric("Total Wall-Clock E2E", f"{e2e_total_ms:.1f} ms")
+                    with col_t2:
+                        ret_pct = (retrieval_latency_ms / e2e_total_ms * 100) if e2e_total_ms > 0 else 0
+                        st.metric("Vector Retrieval", f"{retrieval_latency_ms:.1f} ms", delta=f"{ret_pct:.1f}% of total", delta_color="off")
+                    with col_t3:
+                        gen_total = gen_prompt_ms + gen_llm_ms
+                        gen_pct = (gen_total / e2e_total_ms * 100) if e2e_total_ms > 0 else 0
+                        st.metric("Pipeline 1 (Gen)", f"{gen_total:.1f} ms", delta=f"{gen_pct:.1f}% of total", delta_color="off")
+                    with col_t4:
+                        eval_total = eval_prompt_ms + eval_llm_ms
+                        eval_pct = (eval_total / e2e_total_ms * 100) if e2e_total_ms > 0 else 0
+                        st.metric("Pipeline 2 (Judge)", f"{eval_total:.1f} ms", delta=f"{eval_pct:.1f}% of total", delta_color="off")
+
+                    # Granular Step Table
+                    telemetry_rows = [
+                        {
+                            "Step #": 1,
+                            "Execution Stage": "Dense Embedding",
+                            "Component / Engine": f"FastEmbed ({config.EMBEDDING_MODEL_NAME})",
+                            "Duration (ms)": round(ret_telemetry["dense_embed_ms"], 2),
+                            "% of E2E": f"{(ret_telemetry['dense_embed_ms'] / e2e_total_ms * 100):.1f}%" if e2e_total_ms > 0 else "0.0%",
+                            "SLA & Performance Status": "⚡ ONNX Cached (<50ms)" if ret_telemetry["dense_embed_ms"] < 50 else "Active Inference",
+                        },
+                        {
+                            "Step #": 2,
+                            "Execution Stage": "Sparse BM25 Tokenization",
+                            "Component / Engine": f"FastEmbed ({config.SPARSE_MODEL_NAME})",
+                            "Duration (ms)": round(ret_telemetry["sparse_embed_ms"], 2),
+                            "% of E2E": f"{(ret_telemetry['sparse_embed_ms'] / e2e_total_ms * 100):.1f}%" if e2e_total_ms > 0 else "0.0%",
+                            "SLA & Performance Status": "⚡ ONNX Sparse Tokenizer",
+                        },
+                        {
+                            "Step #": 3,
+                            "Execution Stage": "Qdrant Vector Search",
+                            "Component / Engine": "Qdrant Cloud (Cosine + Sparse IDF)",
+                            "Duration (ms)": round(ret_telemetry["qdrant_search_ms"], 2),
+                            "% of E2E": f"{(ret_telemetry['qdrant_search_ms'] / e2e_total_ms * 100):.1f}%" if e2e_total_ms > 0 else "0.0%",
+                            "SLA & Performance Status": "✅ Target Met (<250ms)" if ret_telemetry["qdrant_search_ms"] < 250 else "High Network Roundtrip",
+                        },
+                        {
+                            "Step #": 4,
+                            "Execution Stage": "RRF Fusion & Filtering",
+                            "Component / Engine": "In-Memory Reciprocal Rank Fusion",
+                            "Duration (ms)": round(ret_telemetry["rrf_fusion_ms"], 2),
+                            "% of E2E": f"{(ret_telemetry['rrf_fusion_ms'] / e2e_total_ms * 100):.1f}%" if e2e_total_ms > 0 else "0.0%",
+                            "SLA & Performance Status": "⚡ Instant In-Memory Merge",
+                        },
+                        {
+                            "Step #": 5,
+                            "Execution Stage": "Prompt Assembly",
+                            "Component / Engine": "Context Formatter & System Prompt",
+                            "Duration (ms)": round(gen_prompt_ms, 2),
+                            "% of E2E": f"{(gen_prompt_ms / e2e_total_ms * 100):.1f}%" if e2e_total_ms > 0 else "0.0%",
+                            "SLA & Performance Status": "⚡ Sub-millisecond String Format",
+                        },
+                        {
+                            "Step #": 6,
+                            "Execution Stage": "Pipeline 1: RAG Generation",
+                            "Component / Engine": f"ChatGroq ({config.GROQ_MODEL_NAME})",
+                            "Duration (ms)": round(gen_llm_ms, 2),
+                            "% of E2E": f"{(gen_llm_ms / e2e_total_ms * 100):.1f}%" if e2e_total_ms > 0 else "0.0%",
+                            "SLA & Performance Status": "🤖 Groq LPU Inference (GROQ_API_KEY)",
+                        },
+                        {
+                            "Step #": 7,
+                            "Execution Stage": "Pipeline 2: RAGAS Judge",
+                            "Component / Engine": f"ChatGroq Judge ({config.GROQ_MODEL_NAME})",
+                            "Duration (ms)": round(eval_prompt_ms + eval_llm_ms, 2),
+                            "% of E2E": f"{((eval_prompt_ms + eval_llm_ms) / e2e_total_ms * 100):.1f}%" if e2e_total_ms > 0 else "0.0%",
+                            "SLA & Performance Status": "⚖️ Dedicated Key (GROQ_RAGAS_API_KEY)" if has_ground_truth else "⏭️ Skipped (No Ground Truth)",
+                        },
+                        {
+                            "Step #": 8,
+                            "Execution Stage": "End-to-End Total Wall-Clock",
+                            "Component / Engine": "Complete Dual-Pipeline Lifecycle",
+                            "Duration (ms)": round(e2e_total_ms, 2),
+                            "% of E2E": "100.0%",
+                            "SLA & Performance Status": "🏁 End-to-End Execution Complete",
+                        },
+                    ]
+
+                    st.dataframe(pd.DataFrame(telemetry_rows), use_container_width=True, hide_index=True)
+
+                    # Structured JSON Telemetry
+                    st.json({
+                        "query": query_text,
+                        "retrieval_strategy": mode_param,
+                        "category_filter": filter_param or "none",
+                        "timings_ms": {
+                            "dense_embed": round(ret_telemetry["dense_embed_ms"], 2),
+                            "sparse_embed": round(ret_telemetry["sparse_embed_ms"], 2),
+                            "qdrant_search": round(ret_telemetry["qdrant_search_ms"], 2),
+                            "rrf_fusion": round(ret_telemetry["rrf_fusion_ms"], 2),
+                            "retrieval_total": round(retrieval_latency_ms, 2),
+                            "gen_prompt_assembly": round(gen_prompt_ms, 2),
+                            "gen_llm_call": round(gen_llm_ms, 2),
+                            "eval_prompt_assembly": round(eval_prompt_ms, 2),
+                            "eval_llm_call": round(eval_llm_ms, 2),
+                            "end_to_end_total": round(e2e_total_ms, 2),
+                        },
+                        "sla": {
+                            "vector_retrieval_sla_target_ms": config.LATENCY_TARGET_P95_MS,
+                            "vector_retrieval_sla_passed": sla_pass,
+                        },
+                    })
 
     # =============================================================
     # TAB 2: Side-by-Side RAGAS Benchmark Scoreboard

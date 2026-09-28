@@ -317,6 +317,172 @@ class QdrantHybridRetriever:
             logger.exception("Error during hybrid retrieval for '%s': %s", query, str(e))
             return []
 
+    def search_detailed(
+        self,
+        query: str,
+        mode: Literal["hybrid", "dense", "sparse"] = "hybrid",
+        category_filter: str | None = None,
+        top_k: int = config.DEFAULT_TOP_K,
+    ) -> tuple[list[RetrievedDocument], dict[str, float]]:
+        """Execute search with discrete sub-millisecond profiling for every pipeline stage.
+
+        Returns:
+            (retrieved_docs, telemetry_dict) where telemetry_dict contains:
+            - dense_embed_ms
+            - sparse_embed_ms
+            - qdrant_search_ms
+            - rrf_fusion_ms
+            - retrieval_total_ms
+        """
+        if not query or not query.strip():
+            return [], {
+                "dense_embed_ms": 0.0,
+                "sparse_embed_ms": 0.0,
+                "qdrant_search_ms": 0.0,
+                "rrf_fusion_ms": 0.0,
+                "retrieval_total_ms": 0.0,
+            }
+
+        start_time = time.perf_counter()
+        dense_embed_ms = 0.0
+        sparse_embed_ms = 0.0
+        qdrant_search_ms = 0.0
+        rrf_fusion_ms = 0.0
+
+        qdrant_filter = self._build_filter(category_filter)
+
+        try:
+            # 1. Profile Dense Embedding
+            if mode in ("hybrid", "dense"):
+                t_dense = time.perf_counter()
+                dense_vec = self._embed_dense_query(query)
+                dense_embed_ms = (time.perf_counter() - t_dense) * 1000
+            else:
+                dense_vec = None
+
+            # 2. Profile Sparse BM25 Vectorization
+            if mode in ("hybrid", "sparse"):
+                t_sparse = time.perf_counter()
+                sparse_vec = self._embed_sparse_query(query)
+                sparse_embed_ms = (time.perf_counter() - t_sparse) * 1000
+            else:
+                sparse_vec = None
+
+            # 3. Detect collection config
+            try:
+                coll_info = self.client.get_collection(self.collection_name)
+                has_sparse = bool(coll_info.config.params.sparse_vectors)
+                named_vectors = isinstance(coll_info.config.params.vectors, dict)
+            except Exception:
+                has_sparse = "hybrid" in self.collection_name
+                named_vectors = "hybrid" in self.collection_name
+
+            # 4. Profile Pure Qdrant Search & Fusion
+            t_qdrant = time.perf_counter()
+            method_label = "Dense"
+
+            if mode == "hybrid" and has_sparse and dense_vec is not None and sparse_vec is not None:
+                method_label = "Hybrid (RRF)"
+                response = self.client.query_points(
+                    collection_name=self.collection_name,
+                    prefetch=[
+                        rest_models.Prefetch(
+                            query=dense_vec,
+                            using="dense" if named_vectors else None,
+                            limit=top_k * 3,
+                            filter=qdrant_filter,
+                        ),
+                        rest_models.Prefetch(
+                            query=sparse_vec,
+                            using="sparse",
+                            limit=top_k * 3,
+                            filter=qdrant_filter,
+                        ),
+                    ],
+                    query=rest_models.FusionQuery(fusion=rest_models.Fusion.RRF),
+                    limit=top_k,
+                    with_payload=True,
+                )
+                search_results = response.points
+
+            elif mode == "sparse" and has_sparse and sparse_vec is not None:
+                method_label = "Sparse (BM25)"
+                response = self.client.query_points(
+                    collection_name=self.collection_name,
+                    query=sparse_vec,
+                    using="sparse",
+                    limit=top_k,
+                    query_filter=qdrant_filter,
+                    with_payload=True,
+                )
+                search_results = response.points
+
+            else:
+                method_label = "Dense" if mode == "dense" else "Hybrid (Dense-Fallback)"
+                if hasattr(self.client, "query_points"):
+                    response = self.client.query_points(
+                        collection_name=self.collection_name,
+                        query=dense_vec,
+                        using="dense" if named_vectors else None,
+                        limit=top_k,
+                        query_filter=qdrant_filter,
+                        with_payload=True,
+                    )
+                    search_results = response.points
+                else:
+                    search_results = getattr(self.client, "search")(
+                        collection_name=self.collection_name,
+                        query_vector=dense_vec,
+                        limit=top_k,
+                        query_filter=qdrant_filter,
+                        with_payload=True,
+                    )
+
+            qdrant_search_ms = (time.perf_counter() - t_qdrant) * 1000
+
+            # 5. Profile RRF Parsing and In-Memory Post-Processing
+            t_rrf = time.perf_counter()
+            retrieved_docs: list[RetrievedDocument] = []
+            total_latency_ms = (time.perf_counter() - start_time) * 1000
+
+            for hit in search_results:
+                payload = hit.payload or {}
+                text = payload.get("text", "")
+                meta = {k: v for k, v in payload.items() if k != "text"}
+
+                retrieved_docs.append(
+                    RetrievedDocument(
+                        id=hit.id,
+                        score=float(hit.score),
+                        text=text,
+                        metadata=meta,
+                        latency_ms=total_latency_ms,
+                        method=method_label,
+                    )
+                )
+            rrf_fusion_ms = (time.perf_counter() - t_rrf) * 1000
+            retrieval_total_ms = (time.perf_counter() - start_time) * 1000
+
+            telemetry = {
+                "dense_embed_ms": dense_embed_ms,
+                "sparse_embed_ms": sparse_embed_ms,
+                "qdrant_search_ms": qdrant_search_ms,
+                "rrf_fusion_ms": rrf_fusion_ms,
+                "retrieval_total_ms": retrieval_total_ms,
+            }
+
+            return retrieved_docs, telemetry
+
+        except Exception as e:
+            logger.exception("Error during hybrid retrieval with profiling: %s", str(e))
+            return [], {
+                "dense_embed_ms": dense_embed_ms,
+                "sparse_embed_ms": sparse_embed_ms,
+                "qdrant_search_ms": qdrant_search_ms,
+                "rrf_fusion_ms": rrf_fusion_ms,
+                "retrieval_total_ms": (time.perf_counter() - start_time) * 1000,
+            }
+
     def upsert_document(
         self,
         passage_id: int | str,
