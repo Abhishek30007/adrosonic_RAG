@@ -48,8 +48,12 @@ class PipelineConfig:
     QDRANT_STORAGE_PATH: str = str(BASE_DIR / "qdrant_storage")
     METRICS_EXPORT_PATH: str = str(BASE_DIR / "phase1_baseline_metrics.csv")
 
+    # Database Mode Toggle (Local Embedded vs Cloud)
+    # Evaluators can toggle USE_LOCAL_DB=true in .env to run with 0ms network latency
+    USE_LOCAL_DB: bool = _get_secret("USE_LOCAL_DB", "true").lower() in ("true", "1", "yes")
+
     # Qdrant Database Configuration (Cloud vs Local Fallback)
-    # If QDRANT_URL and QDRANT_API_KEY are provided, Qdrant Cloud is used.
+    # If USE_LOCAL_DB is False and QDRANT_URL/API_KEY are provided, Qdrant Cloud is used.
     QDRANT_URL: str | None = _get_secret("QDRANT_URL", None)
     QDRANT_API_KEY: str | None = _get_secret("QDRANT_API_KEY", None)
     QDRANT_HOST: str | None = os.getenv("QDRANT_HOST", None)

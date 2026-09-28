@@ -46,30 +46,39 @@ class QdrantHybridRetriever:
 
     def __init__(
         self,
-        collection_name: str = config.HYBRID_COLLECTION_NAME,
+        collection_name: str | None = None,
         dense_model_name: str = config.EMBEDDING_MODEL_NAME,
         sparse_model_name: str = config.SPARSE_MODEL_NAME,
+        use_local_db: bool | None = None,
         qdrant_url: str | None = config.QDRANT_URL,
         qdrant_api_key: str | None = config.QDRANT_API_KEY,
         qdrant_path: str = config.QDRANT_STORAGE_PATH,
         qdrant_host: str | None = config.QDRANT_HOST,
         qdrant_port: int = config.QDRANT_PORT,
     ):
-        self.collection_name = collection_name
         self.dense_model_name = dense_model_name
         self.sparse_model_name = sparse_model_name
+        self.use_local_db = config.USE_LOCAL_DB if use_local_db is None else use_local_db
 
-        # 1. Connect to Qdrant Database (Cloud vs Remote vs Local Fallback)
-        if qdrant_url and qdrant_api_key:
+        # 1. Connect to Qdrant Database (Local Disk vs Cloud vs Remote Docker)
+        if self.use_local_db:
+            if qdrant_host:
+                logger.info("Connecting to local Docker Qdrant at %s:%s (Zero-Transit Latency)", qdrant_host, qdrant_port)
+                self.client = QdrantClient(host=qdrant_host, port=qdrant_port)
+            else:
+                logger.info("Connecting to local embedded Qdrant storage at: %s (Zero-Transit Latency)", qdrant_path)
+                os.makedirs(qdrant_path, exist_ok=True)
+                self.client = QdrantClient(path=qdrant_path)
+            self.collection_name = collection_name or config.COLLECTION_NAME
+        elif qdrant_url and qdrant_api_key:
             logger.info("Connecting to Qdrant Cloud Cluster at: %s", qdrant_url)
             self.client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
-        elif qdrant_host:
-            logger.info("Connecting to remote Qdrant at %s:%s", qdrant_host, qdrant_port)
-            self.client = QdrantClient(host=qdrant_host, port=qdrant_port)
+            self.collection_name = collection_name or config.HYBRID_COLLECTION_NAME
         else:
-            logger.info("Connecting to local Qdrant at: %s", qdrant_path)
+            logger.info("Falling back to local Qdrant at: %s", qdrant_path)
             os.makedirs(qdrant_path, exist_ok=True)
             self.client = QdrantClient(path=qdrant_path)
+            self.collection_name = collection_name or config.COLLECTION_NAME
 
         # 2. Initialize Dual Embedding Models (FastEmbed ONNX CPU)
         logger.info("Initializing Dense model: %s", self.dense_model_name)
