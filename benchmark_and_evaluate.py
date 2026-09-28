@@ -19,7 +19,7 @@ from langchain_groq import ChatGroq
 import numpy as np
 import pandas as pd
 
-from config import config, get_groq_api_key
+from config import config, get_groq_api_key, get_groq_ragas_api_key
 from hybrid_retriever import QdrantHybridRetriever
 
 # Configure structured console logging
@@ -223,9 +223,9 @@ def run_ragas_evaluation(
     """Evaluate Phase 2 Hybrid search against 20 benchmark QA pairs."""
     logger.info("=== STARTING PHASE 2 RAGAS / GROQ EVALUATION ===")
 
-    api_key = get_groq_api_key(groq_api_key)
+    api_key = get_groq_ragas_api_key(groq_api_key)
     model_name = os.getenv("GROQ_MODEL_NAME", config.GROQ_MODEL_NAME)
-    logger.info("Initializing ChatGroq LLM Judge (%s)...", model_name)
+    logger.info("Initializing ChatGroq LLM Judge (%s) using dedicated GROQ_RAGAS_API_KEY...", model_name)
 
     llm_judge = ChatGroq(
         groq_api_key=api_key,

@@ -15,7 +15,7 @@ from typing import Any
 from langchain_groq import ChatGroq
 import pandas as pd
 
-from config import config, get_groq_api_key
+from config import config, get_groq_api_key, get_groq_ragas_api_key
 from retriever import DenseRetriever
 
 # Configure structured logging
@@ -176,15 +176,15 @@ def run_evaluation(
     """
     logger.info("=== STARTING PHASE 1 RAGAS / LLM JUDGE EVALUATION ===")
 
-    # 1. Validate Groq Credentials
-    api_key = get_groq_api_key(groq_api_key)
+    # 1. Validate Groq RAGAS Credentials
+    api_key = get_groq_ragas_api_key(groq_api_key)
 
     # 2. Initialize Dense Retriever
     retriever = DenseRetriever()
 
-    # 3. Initialize ChatGroq LLM Judge
+    # 3. Initialize ChatGroq LLM Judge with dedicated RAGAS key
     model_name = os.getenv("GROQ_MODEL_NAME", config.GROQ_MODEL_NAME)
-    logger.info("Initializing ChatGroq LLM Judge (%s)...", model_name)
+    logger.info("Initializing ChatGroq LLM Judge (%s) using dedicated GROQ_RAGAS_API_KEY...", model_name)
     llm_judge = ChatGroq(
         groq_api_key=api_key,
         model_name=model_name,

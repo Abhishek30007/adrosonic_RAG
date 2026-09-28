@@ -87,17 +87,43 @@ class QdrantHybridRetriever:
         self._verify_collection()
 
     def _verify_collection(self) -> None:
-        """Verify collection exists in Qdrant; fall back gracefully if not yet created."""
+        """Verify collection exists in Qdrant and has points; fall back gracefully if empty."""
         try:
             collections = [c.name for c in self.client.get_collections().collections]
-            if self.collection_name not in collections:
-                # If hybrid collection isn't built yet, check if phase 1 dense collection is present
+            
+            # Check if target collection exists and has points
+            has_points = False
+            if self.collection_name in collections:
+                pts = getattr(self.client.get_collection(self.collection_name), "points_count", 0) or 0
+                has_points = pts > 0
+
+            # If current collection is empty or missing, check alternative collections or local storage
+            if not has_points:
                 if config.COLLECTION_NAME in collections:
-                    logger.warning(
-                        "Hybrid collection '%s' not found. Falling back to dense collection '%s'.",
-                        self.collection_name,
-                        config.COLLECTION_NAME,
-                    )
+                    pts = getattr(self.client.get_collection(config.COLLECTION_NAME), "points_count", 0) or 0
+                    if pts > 0:
+                        logger.info("Using populated collection '%s' (%d points)", config.COLLECTION_NAME, pts)
+                        self.collection_name = config.COLLECTION_NAME
+                        return
+
+                # Check local storage directory
+                if os.path.exists(config.QDRANT_STORAGE_PATH):
+                    try:
+                        local_client = QdrantClient(path=config.QDRANT_STORAGE_PATH)
+                        local_colls = [c.name for c in local_client.get_collections().collections]
+                        for c_name in [config.HYBRID_COLLECTION_NAME, config.COLLECTION_NAME]:
+                            if c_name in local_colls:
+                                pts = getattr(local_client.get_collection(c_name), "points_count", 0) or 0
+                                if pts > 0:
+                                    logger.info("Falling back to local Qdrant collection '%s' (%d points)", c_name, pts)
+                                    self.client = local_client
+                                    self.collection_name = c_name
+                                    return
+                    except Exception:
+                        pass
+
+            if self.collection_name not in collections:
+                if config.COLLECTION_NAME in collections:
                     self.collection_name = config.COLLECTION_NAME
                 else:
                     logger.warning("Collection '%s' does not exist yet.", self.collection_name)

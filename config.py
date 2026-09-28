@@ -79,6 +79,7 @@ class PipelineConfig:
 
     # LLM & Evaluation Configuration (Groq & RAGAS)
     GROQ_API_KEY: str = _get_secret("GROQ_API_KEY", "") or ""
+    GROQ_RAGAS_API_KEY: str = _get_secret("GROQ_RAGAS_API_KEY", "") or _get_secret("GROQ_API_KEY", "") or ""
     GROQ_MODEL_NAME: str = _get_secret("GROQ_MODEL_NAME", "openai/gpt-oss-20b") or "openai/gpt-oss-20b"
     EVAL_TEMPERATURE: float = 0.0
     PHASE1_METRICS_PATH: str = str(BASE_DIR / "phase1_baseline_metrics.csv")
@@ -137,5 +138,25 @@ def get_groq_api_key(override_key: str | None = None) -> str:
         raise ValueError(
             "Groq API Key is not set. Please set the GROQ_API_KEY environment variable "
             "or add it to .streamlit/secrets.toml."
+        )
+    return api_key
+
+
+def get_groq_ragas_api_key(override_key: str | None = None) -> str:
+    """Retrieve and validate the Groq API key strictly for RAGAS evaluation.
+
+    Checks GROQ_RAGAS_API_KEY first, with automatic fallback to GROQ_API_KEY.
+    """
+    api_key = (
+        override_key
+        or config.GROQ_RAGAS_API_KEY
+        or config.GROQ_API_KEY
+        or os.getenv("GROQ_RAGAS_API_KEY")
+        or os.getenv("GROQ_API_KEY")
+    )
+    if not api_key:
+        raise ValueError(
+            "Groq RAGAS API Key is not set. Please set the GROQ_RAGAS_API_KEY (or GROQ_API_KEY) "
+            "environment variable or add it to .streamlit/secrets.toml."
         )
     return api_key
